@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="맛집 다이어리" />
+  <title>맛집 다이어리 | 리뷰 & Top 10</title>
+  <link rel="manifest" href="manifest.json" />
+  <link rel="icon" type="image/svg+xml" href="icons/icon.svg" />
+  <link rel="apple-touch-icon" href="icons/icon.svg" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;600;700&family=Playfair+Display:wght@600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <header class="header">
+      <h1 class="logo">맛집 다이어리</h1>
+      <div class="header-right">
+        <div class="points-badge" id="points-badge">
+          <span class="points-value" id="points-value">0</span>
+          <span class="points-label">P</span>
+        </div>
+        <button type="button" class="btn-login" id="btn-login" aria-label="로그인">로그인</button>
+        <div class="header-user hidden" id="header-user">
+          <span class="header-username" id="header-username"></span>
+          <button type="button" class="btn-logout" id="btn-logout">로그아웃</button>
+        </div>
+      </div>
+    </header>
+
+    <!-- 출석 체크 (하루 50P) -->
+    <div class="attendance-bar" id="attendance-bar">
+      <div class="attendance-done hidden" id="attendance-done">
+        <span class="attendance-emoji">✅</span>
+        <span>오늘 출석 완료! +50P</span>
+      </div>
+      <div class="attendance-todo" id="attendance-todo">
+        <span>출석하고 <strong>50P</strong> 받기</span>
+        <button type="button" class="btn btn-attendance" id="btn-attendance">출석하기</button>
+      </div>
+    </div>
+
+    <!-- 앱 설치 유도 (모바일, 미설치 시) -->
+    <div class="install-banner hidden" id="install-banner">
+      <div class="install-banner-inner">
+        <p class="install-banner-text">📱 앱으로 설치하면 더 편하게 사용할 수 있어요</p>
+        <div class="install-banner-actions">
+          <button type="button" class="btn btn-primary btn-sm hidden" id="btn-install-pwa">앱 설치</button>
+          <button type="button" class="btn btn-outline btn-sm" id="btn-install-guide">설치 안내</button>
+          <button type="button" class="install-banner-close" id="install-banner-close" aria-label="닫기">×</button>
+        </div>
+        <div class="install-guide hidden" id="install-guide">
+          <p><strong>iPhone</strong>: Safari에서 공유(□↑) → 홈 화면에 추가</p>
+          <p><strong>Android</strong>: Chrome 메뉴(⋮) → 앱 설치 / 홈 화면에 추가</p>
+        </div>
+      </div>
+    </div>
+
+    <main class="content">
+      <!-- Top 10 맛집 -->
+      <section id="panel-top10" class="panel active">
+        <h2 class="screen-title">내 Top 10 맛집</h2>
+        <p class="panel-desc">평점 순 상위 10개</p>
+        <div id="top10-list" class="card-list top10-list"></div>
+        <p id="top10-empty" class="empty-msg hidden">아직 후기가 없어요.<br>첫 후기를 쓰면 50P, 사진까지 올리면 100P!</p>
+      </section>
+
+      <!-- 전체 후기 목록 -->
+      <section id="panel-reviews" class="panel">
+        <h2 class="screen-title">전체 후기</h2>
+        <div id="reviews-list" class="card-list"></div>
+        <p id="reviews-empty" class="empty-msg hidden">등록된 후기가 없습니다.</p>
+      </section>
+
+      <!-- 명예의 전당 -->
+      <section id="panel-hall" class="panel">
+        <h2 class="screen-title">명예의 전당</h2>
+        <nav class="hall-tabs" role="tablist" aria-label="명예의 전당 메뉴">
+          <button type="button" class="hall-tab active" data-hall="people" role="tab" aria-selected="true">사람</button>
+          <button type="button" class="hall-tab" data-hall="restaurants" role="tab" aria-selected="false">전체 식당</button>
+          <button type="button" class="hall-tab" data-hall="category" role="tab" aria-selected="false">카테고리별</button>
+        </nav>
+        <div id="hall-panel-people" class="hall-panel active">
+          <h3 class="hall-heading">한 주 최고 포인트 획득자 순위</h3>
+          <p class="panel-desc">최근 7일간 획득한 포인트 순이에요.</p>
+          <ul id="hall-reviewers" class="hall-rank-list"></ul>
+          <p id="hall-reviewers-empty" class="empty-msg hidden">아직 리뷰가 없어요.</p>
+        </div>
+        <div id="hall-panel-restaurants" class="hall-panel">
+          <h3 class="hall-heading">평점이 제일 높은 식당 순위</h3>
+          <p class="panel-desc">내 리뷰 + 다른 유저들이 평가한 가게를 포함한 최고 평점이에요.</p>
+          <ul id="hall-restaurants" class="hall-rank-list"></ul>
+          <p id="hall-restaurants-empty" class="empty-msg hidden">아직 리뷰가 없어요.</p>
+        </div>
+        <div id="hall-panel-category" class="hall-panel">
+          <h3 class="hall-heading">카테고리별 순위</h3>
+          <p class="panel-desc">카테고리를 선택하면 해당 음식 종류별 최고 평점 식당이에요.</p>
+          <div class="hall-category-picker">
+            <select id="hall-category-select" aria-label="카테고리 선택">
+              <option value="한식">한식</option>
+              <option value="중식">중식</option>
+              <option value="일식">일식</option>
+              <option value="양식">양식</option>
+              <option value="분식">분식</option>
+            </select>
+          </div>
+          <ul id="hall-category-list" class="hall-rank-list"></ul>
+          <p id="hall-category-empty" class="empty-msg hidden">이 카테고리에는 아직 식당이 없어요.</p>
+        </div>
+      </section>
+
+      <!-- 후기 작성 -->
+      <section id="panel-write" class="panel">
+        <h2 class="screen-title">후기 쓰기</h2>
+        <p class="point-info">
+          후기만 작성 <strong>50P</strong> · 사진 추가 시 <strong>100P</strong> 적립
+        </p>
+        <p class="point-info rule-info">같은 식당은 <strong>한 주에 한 번만</strong> 리뷰할 수 있어요.</p>
+        <form id="review-form" class="review-form">
+          <label>
+            <span>식당 이름 *</span>
+            <input type="text" name="name" placeholder="예: 강남 돈까스집" required />
+          </label>
+          <label>
+            <span>위치 / 주소</span>
+            <input type="text" name="location" placeholder="예: 서울 강남구 역삼동" />
+          </label>
+          <label>
+            <span>음식 카테고리</span>
+            <select name="category" id="category-select">
+              <option value="">선택</option>
+              <option value="한식">한식</option>
+              <option value="중식">중식</option>
+              <option value="일식">일식</option>
+              <option value="양식">양식</option>
+              <option value="분식">분식</option>
+            </select>
+          </label>
+          <label>
+            <span>평점 (0~10, 소수점 한 자리) *</span>
+            <div class="rating-10-wrap">
+              <input type="range" id="rating-slider" name="rating" min="0" max="10" step="0.1" value="5" required />
+              <output id="rating-display" class="rating-display" for="rating-slider">5.0</output>
+              <span class="rating-unit">/ 10</span>
+            </div>
+          </label>
+          <label>
+            <span>사진 (올리면 100P)</span>
+            <div class="photo-upload">
+              <input type="file" id="photo-input" name="photo" accept="image/*" />
+              <div class="photo-preview" id="photo-preview"></div>
+              <button type="button" class="btn btn-outline btn-photo" id="btn-add-photo">📷 사진 추가</button>
+              <button type="button" class="btn btn-outline btn-remove-photo hidden" id="btn-remove-photo">사진 제거</button>
+            </div>
+          </label>
+          <label>
+            <span>한줄 코멘트</span>
+            <input type="text" name="comment" placeholder="예: 돈까스가 바삭하고 소스가 일품!" />
+          </label>
+          <label>
+            <span>상세 후기</span>
+            <textarea name="detail" rows="4" placeholder="다녀온 날, 메뉴, 분위기 등을 자유롭게 적어주세요."></textarea>
+          </label>
+          <label>
+            <span>방문일</span>
+            <input type="date" name="visitDate" />
+          </label>
+          <div class="form-actions">
+            <button type="submit" class="btn btn-primary">저장하고 포인트 받기</button>
+            <button type="reset" class="btn btn-secondary">초기화</button>
+          </div>
+        </form>
+      </section>
+
+      <!-- 광고 -->
+      <section id="panel-ads" class="panel">
+        <h2 class="screen-title">광고</h2>
+        <p class="panel-desc">광고를 <strong>끝까지</strong> 시청하면 10P를 받을 수 있어요.</p>
+        <div class="ad-admin-section hidden" id="ad-admin-section">
+          <h3 class="ad-admin-heading">광고 등록 (관리자)</h3>
+          <form id="ad-admin-form" class="ad-admin-form">
+            <label>
+              <span>광고 유형</span>
+              <select name="adType" id="ad-type">
+                <option value="image">이미지</option>
+                <option value="iframe">링크(iframe)</option>
+              </select>
+            </label>
+            <label>
+              <span>URL</span>
+              <input type="url" name="adUrl" id="ad-url" placeholder="https://..." />
+            </label>
+            <div class="form-actions">
+              <button type="submit" class="btn btn-primary">광고 저장</button>
+              <button type="button" class="btn btn-secondary" id="ad-remove-btn">광고 제거</button>
+            </div>
+          </form>
+        </div>
+        <div class="ad-container" id="ad-container">
+          <div class="ad-placeholder" id="ad-placeholder">
+            <span class="ad-placeholder-text">광고 영역</span>
+            <p class="ad-placeholder-desc">아래 버튼을 누르고 전체 시청을 완료하면 10P가 적립됩니다.</p>
+          </div>
+        </div>
+        <div class="ad-countdown-bar hidden" id="ad-countdown-overlay">
+          <div class="ad-countdown-timer">
+            <span class="ad-countdown-num" id="ad-countdown-num">30</span>
+            <span class="ad-countdown-unit">초</span>
+          </div>
+          <p class="ad-countdown-text">광고 시청 중 · 끝까지 시청해 주세요</p>
+        </div>
+        <div class="ad-actions">
+          <button type="button" class="btn btn-primary" id="ad-watch-btn">광고 시청하기 (10P)</button>
+        </div>
+      </section>
+
+      <!-- 내 정보 -->
+      <section id="panel-mypage" class="panel">
+        <h2 class="screen-title">내 정보</h2>
+        <div id="mypage-guest" class="mypage-guest">
+          <p class="panel-desc">로그인 후 이용할 수 있어요.</p>
+        </div>
+        <div id="mypage-user" class="mypage-user hidden">
+          <p class="mypage-current">현재 로그인: <strong id="mypage-username"></strong></p>
+          <div class="mypage-section">
+            <h3 class="mypage-heading">아이디 변경</h3>
+            <form id="mypage-form-username" class="review-form">
+              <label><span>새 아이디</span><input type="text" id="mypage-new-username" placeholder="2자 이상" minlength="2" /></label>
+              <button type="submit" class="btn btn-primary">아이디 변경</button>
+            </form>
+          </div>
+          <div class="mypage-section">
+            <h3 class="mypage-heading">비밀번호 변경</h3>
+            <form id="mypage-form-password" class="review-form">
+              <label><span>현재 비밀번호</span><input type="password" id="mypage-current-pw" placeholder="현재 비밀번호" /></label>
+              <label><span>새 비밀번호</span><input type="password" id="mypage-new-pw" placeholder="4자 이상" minlength="4" /></label>
+              <label><span>새 비밀번호 확인</span><input type="password" id="mypage-new-pw-confirm" placeholder="다시 입력" /></label>
+              <button type="submit" class="btn btn-primary">비밀번호 변경</button>
+            </form>
+          </div>
+          <div id="mypage-master-section" class="mypage-section hidden">
+            <h3 class="mypage-heading">관리자 권한</h3>
+            <p class="panel-desc">명예의 전당 시드(다른 유저/식당 예시)를 삭제하거나 다시 표시할 수 있어요. 마스터 계정에서만 관리 가능해요.</p>
+            <button type="button" class="btn btn-outline" id="btn-hall-seed-toggle" aria-label="시드 삭제 또는 씨드 다시 표시"></button>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <nav class="bottom-nav" role="tablist" aria-label="메인 메뉴">
+      <button type="button" class="nav-item active" role="tab" data-tab="top10" aria-selected="true" aria-label="내 Top 10 맛집">
+        <span class="nav-icon">🏆</span>
+        <span class="nav-label">Top 10</span>
+      </button>
+      <button type="button" class="nav-item" role="tab" data-tab="hall" aria-selected="false" aria-label="명예의 전당">
+        <span class="nav-icon">👑</span>
+        <span class="nav-label">명예의 전당</span>
+      </button>
+      <button type="button" class="nav-item" role="tab" data-tab="reviews" aria-selected="false" aria-label="전체 후기">
+        <span class="nav-icon">📝</span>
+        <span class="nav-label">전체</span>
+      </button>
+      <button type="button" class="nav-item" role="tab" data-tab="write" aria-selected="false" aria-label="후기 쓰기">
+        <span class="nav-icon">✏️</span>
+        <span class="nav-label">후기쓰기</span>
+      </button>
+      <button type="button" class="nav-item" role="tab" data-tab="ads" aria-selected="false" aria-label="광고">
+        <span class="nav-icon">📢</span>
+        <span class="nav-label">광고</span>
+      </button>
+      <button type="button" class="nav-item" role="tab" data-tab="mypage" aria-selected="false" aria-label="내 정보">
+        <span class="nav-icon">👤</span>
+        <span class="nav-label">내정보</span>
+      </button>
+    </nav>
+  </div>
+
+  <!-- 포인트 적립 토스트 -->
+  <div id="toast" class="toast hidden">
+    <span id="toast-message"></span>
+  </div>
+
+  <!-- 로그인 / 회원가입 모달 -->
+  <div id="login-modal" class="modal hidden">
+    <div class="modal-content">
+      <button type="button" class="modal-close" id="login-modal-close" aria-label="닫기">×</button>
+      <div id="login-view">
+        <h3>로그인</h3>
+        <form id="login-form" class="review-form">
+          <label><span>아이디</span><input type="text" name="username" id="login-username" placeholder="아이디" autocomplete="username" /></label>
+          <label><span>비밀번호</span><input type="password" name="password" id="login-password" placeholder="비밀번호" autocomplete="current-password" /></label>
+          <div class="form-actions">
+            <button type="submit" class="btn btn-primary">로그인</button>
+          </div>
+        </form>
+        <p class="auth-switch">계정이 없으신가요? <button type="button" class="btn-link" id="btn-show-signup">회원가입</button></p>
+        <p id="login-error" class="login-error hidden"></p>
+      </div>
+      <div id="signup-view" class="hidden">
+        <h3>회원가입</h3>
+        <form id="signup-form" class="review-form">
+          <label><span>아이디 *</span><input type="text" name="username" id="signup-username" placeholder="2자 이상" autocomplete="username" minlength="2" /></label>
+          <label><span>비밀번호 *</span><input type="password" name="password" id="signup-password" placeholder="4자 이상" autocomplete="new-password" minlength="4" /></label>
+          <label><span>비밀번호 확인 *</span><input type="password" name="passwordConfirm" id="signup-password-confirm" placeholder="비밀번호 다시 입력" autocomplete="new-password" /></label>
+          <div class="form-actions">
+            <button type="submit" class="btn btn-primary">가입하기</button>
+          </div>
+        </form>
+        <p class="auth-switch">이미 계정이 있으신가요? <button type="button" class="btn-link" id="btn-show-login">로그인</button></p>
+        <p id="signup-error" class="login-error hidden"></p>
+      </div>
+    </div>
+  </div>
+
+  <!-- 수정 모달 -->
+  <div id="modal" class="modal hidden">
+    <div class="modal-content">
+      <button type="button" class="modal-close" id="modal-close" aria-label="닫기">×</button>
+      <h3 id="modal-title">후기 수정</h3>
+      <form id="edit-form" class="review-form">
+        <input type="hidden" name="id" />
+        <label><span>식당 이름 *</span><input type="text" name="name" required /></label>
+        <label><span>위치</span><input type="text" name="location" /></label>
+        <label><span>음식 카테고리</span><select name="category"><option value="">선택</option><option value="한식">한식</option><option value="중식">중식</option><option value="일식">일식</option><option value="양식">양식</option><option value="분식">분식</option></select></label>
+        <label><span>평점 (0~10, 소수점 한 자리) *</span><input type="number" name="rating" min="0" max="10" step="0.1" required /></label>
+        <div class="edit-photo-wrap">
+          <label><span>사진</span></label>
+          <div class="edit-photo-preview" id="edit-photo-preview"></div>
+          <input type="file" id="edit-photo-input" accept="image/*" aria-label="사진 변경" />
+          <button type="button" class="btn btn-outline btn-sm" id="edit-photo-change">사진 변경</button>
+        </div>
+        <label><span>한줄 코멘트</span><input type="text" name="comment" /></label>
+        <label><span>상세 후기</span><textarea name="detail" rows="3"></textarea></label>
+        <label><span>방문일</span><input type="date" name="visitDate" /></label>
+        <div class="form-actions">
+          <button type="submit" class="btn btn-primary">저장</button>
+          <button type="button" class="btn btn-danger" id="btn-delete">삭제</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
