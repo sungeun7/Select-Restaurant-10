@@ -21,6 +21,90 @@ const INSTALL_BANNER_DISMISSED_KEY = 'appInstallBannerDismissed';
 const HALL_SEED_ENABLED_KEY = 'appHallSeedEnabled';
 const ONE_WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 
+// ===== Cloud API (Cloud Run) =====
+// 서버 상태를 /api/init으로 받아서, 기존 렌더 로직이 쓰는 localStorage 키들에 동기화합니다.
+async function apiFetchJson(path, options = {}) {
+  const res = await fetch(path, {
+    credentials: 'include',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(options.headers || {}),
+    },
+    ...options,
+  });
+  let data = null;
+  try {
+    data = await res.json();
+  } catch {
+    data = null;
+  }
+  if (!res.ok) {
+    const err = new Error((data && (data.error || data.message)) ? (data.error || data.message) : res.statusText);
+    err.status = res.status;
+    err.payload = data;
+    throw err;
+  }
+  return data;
+}
+
+async function syncFromServer() {
+  const data = await apiFetchJson('/api/init', { method: 'GET' });
+
+  // Auth
+  if (data.currentUser) localStorage.setItem(AUTH_KEY, JSON.stringify(data.currentUser));
+  else localStorage.removeItem(AUTH_KEY);
+
+  // Reviews
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(data.reviews || []));
+
+  // Points
+  localStorage.setItem(POINTS_KEY, String(data.pointsTotal || 0));
+  localStorage.setItem(POINT_HISTORY_KEY, JSON.stringify(data.pointHistory || []));
+
+  // Attendance
+  if (data.lastAttendanceDate) localStorage.setItem(ATTENDANCE_KEY, data.lastAttendanceDate);
+  else localStorage.removeItem(ATTENDANCE_KEY);
+
+  // Ads
+  if (data.ads) localStorage.setItem(AD_CONTENT_KEY, JSON.stringify(data.ads));
+  else localStorage.removeItem(AD_CONTENT_KEY);
+
+  // Hall seed enabled flag (로컬 키 규칙 유지)
+  if (data.hallSeedEnabled === false) localStorage.setItem(HALL_SEED_ENABLED_KEY, '0');
+  else localStorage.removeItem(HALL_SEED_ENABLED_KEY);
+
+  // Hall of Fame 데이터도 서버 응답 기반으로 캐싱합니다.
+  // (렌더 함수는 동기적으로 동작하도록 캐시를 사용합니다.)
+  try {
+    const [peopleRes, restaurantsRes] = await Promise.all([
+      apiFetchJson('/api/hall/people'),
+      apiFetchJson('/api/hall/restaurants'),
+    ]);
+
+    hallCache.reviewers = (peopleRes && peopleRes.reviewers) ? peopleRes.reviewers : [];
+    hallCache.restaurants = (restaurantsRes && restaurantsRes.restaurants) ? restaurantsRes.restaurants : [];
+
+    const catPromises = CATEGORIES.map((cat) =>
+      apiFetchJson('/api/hall/restaurants?category=' + encodeURIComponent(cat))
+        .then((r) => ({ cat, list: (r && r.restaurants) ? r.restaurants : [] }))
+    );
+    const catResults = await Promise.all(catPromises);
+    hallCache.categoryRestaurants = {};
+    catResults.forEach((x) => {
+      hallCache.categoryRestaurants[x.cat] = x.list;
+    });
+  } catch {
+    // Hall 캐시는 렌더 함수 fallback(기존 local 계산)으로 대체됩니다.
+  }
+}
+
+// ===== Hall 캐시 (서버 응답 기반 렌더) =====
+let hallCache = {
+  reviewers: [],
+  restaurants: [],
+  categoryRestaurants: {},
+};
+
 /** 음식 카테고리 */
 const CATEGORIES = ['한식', '중식', '일식', '양식', '분식'];
 
@@ -398,13 +482,23 @@ function renderAttendance() {
 }
 
 if (btnAttendance) {
-  btnAttendance.addEventListener('click', () => {
+  btnAttendance.addEventListener('click', async () => {
+    if (!getCurrentUser()) {
+      if (loginModal) loginModal.classList.remove('hidden');
+      showLoginView();
+      showToast('로그인이 필요해요.');
+      return;
+    }
     if (hasAttendedToday()) return;
-    if (claimAttendance()) {
+    try {
+      await apiFetchJson('/api/attendance/claim', { method: 'POST', body: JSON.stringify({}) });
+      await syncFromServer();
       renderPoints();
       renderHallOfFame();
       renderAttendance();
       showToast('출석 완료! +50P');
+    } catch {
+      showToast('출석 처리에 실패했어요.');
     }
   });
 }
@@ -474,58 +568,69 @@ function renderMypage() {
 }
 
 if (document.getElementById('mypage-form-username')) {
-  document.getElementById('mypage-form-username').addEventListener('submit', (e) => {
+  document.getElementById('mypage-form-username').addEventListener('submit', async (e) => {
     e.preventDefault();
     const user = getCurrentUser();
     if (!user) return;
     const newUsername = (document.getElementById('mypage-new-username').value || '').trim();
     if (newUsername.length < 2) { showToast('아이디는 2자 이상 입력해 주세요.'); return; }
     if (newUsername === user.username) { showToast('현재와 동일한 아이디예요.'); return; }
-    const users = getUsers();
-    if (users[newUsername]) { showToast('이미 사용 중인 아이디예요.'); return; }
-    const oldData = users[user.username];
-    if (!oldData) { showToast('오류가 발생했어요.'); return; }
-    users[newUsername] = { ...oldData };
-    delete users[user.username];
-    saveUsers(users);
-    setCurrentUser({ username: newUsername, isMaster: !!oldData.isMaster });
-    renderAuthUI();
-    renderMypage();
-    document.getElementById('mypage-new-username').value = '';
-    showToast('아이디가 변경되었어요.');
+
+    try {
+      await apiFetchJson('/api/users/me/username', {
+        method: 'PUT',
+        body: JSON.stringify({ username: newUsername }),
+      });
+      await syncFromServer();
+      renderAuthUI();
+      renderMypage();
+      document.getElementById('mypage-new-username').value = '';
+      showToast('아이디가 변경되었어요.');
+    } catch {
+      showToast('아이디 변경에 실패했어요.');
+    }
   });
 }
 
 if (document.getElementById('mypage-form-password')) {
-  document.getElementById('mypage-form-password').addEventListener('submit', (e) => {
+  document.getElementById('mypage-form-password').addEventListener('submit', async (e) => {
     e.preventDefault();
     const user = getCurrentUser();
     if (!user) return;
     const current = (document.getElementById('mypage-current-pw').value || '');
     const newPw = (document.getElementById('mypage-new-pw').value || '');
     const confirmPw = (document.getElementById('mypage-new-pw-confirm').value || '');
-    const users = getUsers();
-    const u = users[user.username];
-    if (!u || u.password !== current) { showToast('현재 비밀번호가 맞지 않아요.'); return; }
     if (newPw.length < 4) { showToast('새 비밀번호는 4자 이상이어야 해요.'); return; }
     if (newPw !== confirmPw) { showToast('새 비밀번호가 일치하지 않아요.'); return; }
-    u.password = newPw;
-    saveUsers(users);
-    document.getElementById('mypage-current-pw').value = '';
-    document.getElementById('mypage-new-pw').value = '';
-    document.getElementById('mypage-new-pw-confirm').value = '';
-    showToast('비밀번호가 변경되었어요.');
+
+    try {
+      await apiFetchJson('/api/users/me/password', {
+        method: 'PUT',
+        body: JSON.stringify({ currentPassword: current, newPassword: newPw }),
+      });
+      document.getElementById('mypage-current-pw').value = '';
+      document.getElementById('mypage-new-pw').value = '';
+      document.getElementById('mypage-new-pw-confirm').value = '';
+      showToast('비밀번호가 변경되었어요.');
+    } catch {
+      showToast('비밀번호 변경에 실패했어요.');
+    }
   });
 }
 
 if (btnHallSeedToggle) {
-  btnHallSeedToggle.addEventListener('click', () => {
+  btnHallSeedToggle.addEventListener('click', async () => {
     if (!isMaster()) return;
     const enabled = getHallSeedEnabled();
-    setHallSeedEnabled(!enabled);
-    renderMypage();
-    renderHallOfFame();
-    showToast(enabled ? '시드가 삭제되었어요.' : '씨드가 다시 표시되었어요.');
+    try {
+      await apiFetchJson('/api/hall/seed/toggle', { method: 'POST', body: JSON.stringify({}) });
+      await syncFromServer();
+      renderMypage();
+      renderHallOfFame();
+      showToast(enabled ? '시드가 삭제되었어요.' : '씨드가 다시 표시되었어요.');
+    } catch {
+      showToast('시드 변경에 실패했어요.');
+    }
   });
 }
 
@@ -648,7 +753,7 @@ function buildReviewCard(review, options = {}) {
   `;
 
   card.querySelector('.btn-edit').addEventListener('click', () => openEditModal(review));
-  card.querySelector('.btn-delete').addEventListener('click', () => deleteReview(review.id));
+  card.querySelector('.btn-delete').addEventListener('click', async () => { await deleteReview(review.id); });
   return card;
 }
 
@@ -698,7 +803,12 @@ function switchHallTab(tabKey) {
 function renderHallCategoryList() {
   if (!hallCategoryList || !hallCategoryEmpty) return;
   const category = (hallCategorySelect && hallCategorySelect.value) || CATEGORIES[0];
-  const list = getHallOfFameRestaurantsByCategory(category);
+  let list = [];
+  if (hallCache && hallCache.categoryRestaurants && Object.prototype.hasOwnProperty.call(hallCache.categoryRestaurants, category)) {
+    list = hallCache.categoryRestaurants[category];
+  } else {
+    list = getHallOfFameRestaurantsByCategory(category);
+  }
   hallCategoryList.innerHTML = '';
   hallCategoryEmpty.classList.add('hidden');
   if (list.length === 0) {
@@ -713,7 +823,9 @@ function renderHallCategoryList() {
 }
 
 function renderHallOfFame() {
-  const reviewers = getHallOfFameReviewers();
+  const reviewers = (hallCache && Array.isArray(hallCache.reviewers) && hallCache.reviewers.length > 0)
+    ? hallCache.reviewers
+    : getHallOfFameReviewers();
   hallReviewersList.innerHTML = '';
   hallReviewersEmpty.classList.add('hidden');
   if (reviewers.length === 0) {
@@ -728,7 +840,9 @@ function renderHallOfFame() {
     });
   }
 
-  const restaurants = getHallOfFameRestaurants();
+  const restaurants = (hallCache && Array.isArray(hallCache.restaurants) && hallCache.restaurants.length > 0)
+    ? hallCache.restaurants
+    : getHallOfFameRestaurants();
   hallRestaurantsList.innerHTML = '';
   hallRestaurantsEmpty.classList.add('hidden');
   if (restaurants.length === 0) {
@@ -790,20 +904,37 @@ function startAdWatch() {
     }
     clearInterval(adCountdownTimer);
     adCountdownTimer = null;
-    addPoints(POINTS_AD_WATCH);
-    renderPoints();
-    renderHallOfFame();
-    showToast('+10P 적립!');
-    adCountdownOverlay.classList.add('hidden');
-    adCountdownNum.textContent = AD_WATCH_SECONDS;
-    adWatchBtn.disabled = false;
-    adWatchBtn.textContent = '광고 시청하기 (10P)';
+    (async () => {
+      try {
+        await apiFetchJson('/api/points/reward', {
+          method: 'POST',
+          body: JSON.stringify({ reason: 'ad', amount: POINTS_AD_WATCH }),
+        });
+        await syncFromServer();
+        renderPoints();
+        renderHallOfFame();
+        showToast('+10P 적립!');
+      } catch {
+        showToast('광고 보상 처리에 실패했어요.');
+      } finally {
+        adCountdownOverlay.classList.add('hidden');
+        adCountdownNum.textContent = AD_WATCH_SECONDS;
+        adWatchBtn.disabled = false;
+        adWatchBtn.textContent = '광고 시청하기 (10P)';
+      }
+    })();
   }, 1000);
 }
 
 if (adWatchBtn) {
   adWatchBtn.addEventListener('click', () => {
     if (adWatchBtn.disabled) return;
+    if (!getCurrentUser()) {
+      if (loginModal) loginModal.classList.remove('hidden');
+      showLoginView();
+      showToast('로그인이 필요해요.');
+      return;
+    }
     startAdWatch();
   });
 }
@@ -817,20 +948,33 @@ if (btnLogin) btnLogin.addEventListener('click', () => { loginModal.classList.re
 if (loginModal) loginModal.addEventListener('click', (e) => { if (e.target === loginModal) { loginModal.classList.add('hidden'); showLoginView(); } });
 
 if (loginForm) {
-  loginForm.addEventListener('submit', (e) => {
+  loginForm.addEventListener('submit', async (e) => {
     e.preventDefault();
     const username = (document.getElementById('login-username').value || '').trim();
     const password = (document.getElementById('login-password').value || '');
     if (loginError) loginError.classList.add('hidden');
-    const users = getUsers();
-    const user = users[username];
-    if (user && user.password === password) {
-      setCurrentUser({ username, isMaster: !!user.isMaster });
-      renderAuthUI();
+    try {
+      const out = await apiFetchJson('/api/auth/login', {
+        method: 'POST',
+        body: JSON.stringify({ username, password }),
+      });
+      const user = out && out.user ? out.user : null;
+
       loginModal.classList.add('hidden');
       loginForm.reset();
-      showToast(user.isMaster ? '관리자로 로그인했습니다.' : '로그인했습니다.');
-    } else {
+
+      await syncFromServer();
+      renderAuthUI();
+      renderPoints();
+      renderTop10();
+      renderReviews();
+      renderAttendance();
+      renderHallOfFame();
+      // Ads 패널이 열려있으면 갱신
+      if (panelAds && panelAds.classList.contains('active')) renderAdsPanel();
+
+      showToast(user && user.isMaster ? '관리자로 로그인했습니다.' : '로그인했습니다.');
+    } catch (err) {
       if (loginError) {
         loginError.textContent = '아이디 또는 비밀번호가 올바르지 않습니다.';
         loginError.classList.remove('hidden');
@@ -869,7 +1013,7 @@ if (document.getElementById('btn-show-login')) {
 if (loginModalClose) loginModalClose.addEventListener('click', () => { loginModal.classList.add('hidden'); showLoginView(); });
 
 if (signupForm) {
-  signupForm.addEventListener('submit', (e) => {
+  signupForm.addEventListener('submit', async (e) => {
     e.preventDefault();
     const username = (document.getElementById('signup-username').value || '').trim();
     const password = (document.getElementById('signup-password').value || '');
@@ -887,23 +1031,39 @@ if (signupForm) {
       if (signupError) { signupError.textContent = '비밀번호가 일치하지 않습니다.'; signupError.classList.remove('hidden'); }
       return;
     }
-    const users = getUsers();
-    if (users[username]) {
-      if (signupError) { signupError.textContent = '이미 사용 중인 아이디입니다.'; signupError.classList.remove('hidden'); }
-      return;
-    }
-    users[username] = { password, isMaster: false };
-    saveUsers(users);
     signupForm.reset();
-    showLoginView();
-    showToast('회원가입이 완료되었습니다. 로그인해 주세요.');
+    try {
+      await apiFetchJson('/api/auth/signup', {
+        method: 'POST',
+        body: JSON.stringify({ username, password }),
+      });
+      showLoginView();
+      showToast('회원가입이 완료되었습니다. 로그인해 주세요.');
+    } catch (err) {
+      if (signupError) {
+        signupError.textContent = '회원가입에 실패했어요. (아이디 중복/서버 오류)';
+        signupError.classList.remove('hidden');
+      }
+    }
   });
 }
 
 if (btnLogout) {
-  btnLogout.addEventListener('click', () => {
-    setCurrentUser(null);
+  btnLogout.addEventListener('click', async () => {
+    try {
+      await apiFetchJson('/api/auth/logout', { method: 'POST', body: JSON.stringify({}) });
+    } catch {
+      // 로그아웃 실패해도 상태 동기화를 시도합니다.
+    }
+    try {
+      await syncFromServer();
+    } catch {}
     renderAuthUI();
+    renderPoints();
+    renderTop10();
+    renderReviews();
+    renderAttendance();
+    renderHallOfFame();
     if (panelAds && panelAds.classList.contains('active')) renderAdsPanel();
     showToast('로그아웃했습니다.');
   });
@@ -911,72 +1071,112 @@ if (btnLogout) {
 
 // ===== 광고 등록 (마스터) =====
 if (adAdminForm) {
-  adAdminForm.addEventListener('submit', (e) => {
+  adAdminForm.addEventListener('submit', async (e) => {
     e.preventDefault();
     const type = document.getElementById('ad-type').value || 'image';
     const url = (document.getElementById('ad-url').value || '').trim();
     if (!url) { showToast('URL을 입력해 주세요.'); return; }
-    setAdContent({ type, url });
-    renderAdContent();
-    showToast('광고가 저장되었습니다.');
+    try {
+      await apiFetchJson('/api/ads', {
+        method: 'POST',
+        body: JSON.stringify({ type, url }),
+      });
+      await syncFromServer();
+      renderAdsPanel();
+      showToast('광고가 저장되었습니다.');
+    } catch {
+      showToast('광고 저장에 실패했어요. (권한/서버 확인)');
+    }
   });
 }
 if (adRemoveBtn) {
-  adRemoveBtn.addEventListener('click', () => {
-    setAdContent(null);
-    renderAdContent();
-    if (document.getElementById('ad-url')) document.getElementById('ad-url').value = '';
-    showToast('광고가 제거되었습니다.');
+  adRemoveBtn.addEventListener('click', async () => {
+    try {
+      await apiFetchJson('/api/ads', { method: 'DELETE', body: JSON.stringify({}) });
+      if (document.getElementById('ad-url')) document.getElementById('ad-url').value = '';
+      await syncFromServer();
+      renderAdsPanel();
+      showToast('광고가 제거되었습니다.');
+    } catch {
+      showToast('광고 제거에 실패했어요. (권한/서버 확인)');
+    }
   });
 }
 
 // ===== 후기 저장 (포인트 적립) =====
-reviewForm.addEventListener('submit', (e) => {
+reviewForm.addEventListener('submit', async (e) => {
   e.preventDefault();
   const formData = new FormData(reviewForm);
-  const hasPhoto = !!pendingPhotoBase64;
-  const points = hasPhoto ? POINTS_WITH_PHOTO : POINTS_REVIEW_ONLY;
 
   const rawRating = parseFloat(formData.get('rating')) || 5;
-  const review = {
-    id: getNextId(),
-    name: formData.get('name').trim(),
-    location: (formData.get('location') || '').trim(),
-    category: (formData.get('category') || '').trim(),
-    rating: toRating10(rawRating),
-    comment: (formData.get('comment') || '').trim(),
-    detail: (formData.get('detail') || '').trim(),
-    visitDate: formData.get('visitDate') || '',
-    photo: pendingPhotoBase64 || null,
-    createdAt: new Date().toISOString(),
-  };
-  if (!review.name) return;
+  const name = formData.get('name') ? formData.get('name').trim() : '';
+  const location = (formData.get('location') || '').trim();
+  const category = (formData.get('category') || '').trim();
+  const comment = (formData.get('comment') || '').trim();
+  const detail = (formData.get('detail') || '').trim();
+  const visitDate = formData.get('visitDate') || '';
 
-  const reviewDate = review.visitDate || review.createdAt;
-  if (!canAddReviewForRestaurant(review.name, reviewDate)) {
+  if (!name) return;
+
+  const user = getCurrentUser();
+  if (!user) {
+    if (loginModal) loginModal.classList.remove('hidden');
+    showLoginView();
+    showToast('로그인이 필요해요.');
+    return;
+  }
+
+  // Local quick-rule check (server가 최종 검증).
+  const reviewDate = visitDate || new Date().toISOString();
+  if (!canAddReviewForRestaurant(name, reviewDate)) {
     showToast('같은 식당은 한 주에 한 번만 리뷰할 수 있어요.');
     return;
   }
 
-  const reviews = getReviews();
-  reviews.push(review);
-  saveReviews(reviews);
-  addPoints(points);
-  renderPoints();
+  const photoBase64 = pendingPhotoBase64 || null;
+  const hasPhoto = typeof photoBase64 === 'string' && photoBase64.trim().length > 0;
+  const points = hasPhoto ? POINTS_WITH_PHOTO : POINTS_REVIEW_ONLY;
 
-  reviewForm.reset();
-  pendingPhotoBase64 = null;
-  photoPreview.innerHTML = '';
-  btnAddPhoto.classList.remove('hidden');
-  btnRemovePhoto.classList.add('hidden');
-  initStarRating();
+  try {
+    await apiFetchJson('/api/reviews', {
+      method: 'POST',
+      body: JSON.stringify({
+        name,
+        location,
+        category,
+        rating: rawRating,
+        comment,
+        detail,
+        visitDate,
+        photoBase64,
+      }),
+    });
 
-  renderTop10();
-  renderReviews();
-  renderHallOfFame();
+    await syncFromServer();
 
-  showToast('+' + points + 'P 적립!');
-  document.querySelector('.nav-item[data-tab="top10"]').click();
+    reviewForm.reset();
+    pendingPhotoBase64 = null;
+    photoPreview.innerHTML = '';
+    btnAddPhoto.classList.remove('hidden');
+    btnRemovePhoto.classList.add('hidden');
+    initStarRating();
+
+    renderPoints();
+    renderTop10();
+    renderReviews();
+    renderHallOfFame();
+    showToast('+' + points + 'P 적립!');
+    document.querySelector('.nav-item[data-tab="top10"]').click();
+  } catch (err) {
+    const status = err && err.status ? err.status : null;
+    const payloadErr = err && err.payload && (err.payload.error || err.payload.message);
+    // Network/CORS 같은 이유로 status/payload을 못 받는 경우가 있어 err.message까지 노출합니다.
+    const msg = (err && err.message) ? err.message : null;
+    console.error('review save failed', { status, payloadErr, msg, err });
+    if (status === 401) showToast('로그인 세션이 확인되지 않았어요. 다시 로그인해 주세요.');
+    else if (status === 409) showToast('같은 식당은 한 주에 한 번만 리뷰할 수 있어요.');
+    else showToast('후기 저장 실패: ' + (payloadErr || status || msg || 'UNKNOWN'));
+  }
 });
 
 reviewForm.addEventListener('reset', () => {
@@ -989,9 +1189,11 @@ reviewForm.addEventListener('reset', () => {
 
 // ===== 수정 모달 =====
 let editingId = null;
+let pendingEditPhotoBase64 = null;
 
 function openEditModal(review) {
   editingId = review.id;
+  pendingEditPhotoBase64 = null;
   modal.classList.remove('hidden');
   editForm.querySelector('[name="id"]').value = review.id;
   editForm.querySelector('[name="name"]').value = review.name || '';
@@ -1013,6 +1215,7 @@ function openEditModal(review) {
 function closeModal() {
   modal.classList.add('hidden');
   editingId = null;
+  pendingEditPhotoBase64 = null;
 }
 
 modalClose.addEventListener('click', closeModal);
@@ -1027,54 +1230,58 @@ editPhotoInput.addEventListener('change', (e) => {
   if (!file || !file.type.startsWith('image/')) return;
   const reader = new FileReader();
   reader.onload = () => {
-    const reviews = getReviews();
-    const idx = reviews.findIndex((r) => r.id === editingId);
-    if (idx !== -1) {
-      reviews[idx].photo = reader.result;
-      saveReviews(reviews);
-      editPhotoPreview.innerHTML = '<img src="' + reader.result.replace(/"/g, '&quot;') + '" alt="" />';
-    }
+    pendingEditPhotoBase64 = reader.result;
+    editPhotoPreview.innerHTML = '<img src="' + reader.result.replace(/"/g, '&quot;') + '" alt="" />';
   };
   reader.readAsDataURL(file);
 });
 
-editForm.addEventListener('submit', (e) => {
+editForm.addEventListener('submit', async (e) => {
   e.preventDefault();
   const formData = new FormData(editForm);
-  const reviews = getReviews();
-  const idx = reviews.findIndex((r) => r.id === editingId);
-  if (idx === -1) {
-    closeModal();
-    return;
-  }
+  const id = parseInt(formData.get('id'), 10) || editingId;
+  if (!id) return;
+
   const editRating = parseFloat(editForm.querySelector('[name="rating"]').value);
-  reviews[idx] = {
-    ...reviews[idx],
-    name: formData.get('name').trim(),
-    location: (formData.get('location') || '').trim(),
-    category: (formData.get('category') || '').trim(),
-    rating: toRating10(editRating),
-    comment: (formData.get('comment') || '').trim(),
-    detail: (formData.get('detail') || '').trim(),
+  const payload = {
+    name: (formData.get('name') || '').toString().trim(),
+    location: (formData.get('location') || '').toString().trim(),
+    category: (formData.get('category') || '').toString().trim(),
+    rating: editRating,
+    comment: (formData.get('comment') || '').toString().trim(),
+    detail: (formData.get('detail') || '').toString().trim(),
     visitDate: formData.get('visitDate') || '',
   };
-  saveReviews(reviews);
-  closeModal();
-  renderTop10();
-  renderReviews();
-  renderHallOfFame();
+
+  // 사용자가 새 사진을 선택했을 때만 photoBase64를 보냅니다.
+  if (pendingEditPhotoBase64) payload.photoBase64 = pendingEditPhotoBase64;
+
+  try {
+    await apiFetchJson('/api/reviews/' + id, { method: 'PUT', body: JSON.stringify(payload) });
+    await syncFromServer();
+    closeModal();
+    renderTop10();
+    renderReviews();
+    renderHallOfFame();
+    showToast('후기가 수정되었어요.');
+  } catch {
+    showToast('후기 수정에 실패했어요.');
+  }
 });
 
-btnDelete.addEventListener('click', () => {
+btnDelete.addEventListener('click', async () => {
   if (!editingId) return;
   if (!confirm('이 후기를 삭제할까요?')) return;
-  deleteReview(editingId);
-  closeModal();
+  try {
+    await deleteReview(editingId);
+  } finally {
+    closeModal();
+  }
 });
 
-function deleteReview(id) {
-  const reviews = getReviews().filter((r) => r.id !== id);
-  saveReviews(reviews);
+async function deleteReview(id) {
+  await apiFetchJson('/api/reviews/' + id, { method: 'DELETE', body: JSON.stringify({}) });
+  await syncFromServer();
   renderTop10();
   renderReviews();
   renderHallOfFame();
@@ -1086,13 +1293,20 @@ if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.
 }
 
 // ===== 초기화 =====
-function init() {
+async function init() {
   initStarRating();
+  try {
+    await syncFromServer();
+  } catch (e) {
+    // 서버가 아직 준비 전일 수 있으므로, 로컬 상태로도 앱이 동작하게 둡니다.
+    console.warn('syncFromServer failed:', e);
+  }
   renderPoints();
   renderTop10();
   renderReviews();
   renderAuthUI();
   renderAttendance();
+  // Hall/Ads 패널은 탭 전환 시 렌더하도록 유지합니다.
   setTimeout(showInstallBannerIfNeeded, 500);
 }
 
